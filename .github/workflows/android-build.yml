@@ -1,0 +1,81 @@
+# Builds the TDC (The Dance Collective) Android app on GitHub's computers.
+# Run it from: GitHub -> this repo -> Actions -> "Build Android app" -> Run workflow
+#
+# You get two downloads on the finished run's page (Artifacts):
+#   TDC-Play-Store-<version>  -> the .aab you upload to Google Play Console
+#   TDC-Phone-Test-<version>  -> an .apk you can install straight on an Android phone
+#
+# Needs four repository secrets (Settings -> Secrets and variables -> Actions):
+#   TDC_KEYSTORE_B64       the upload key file, as base64 text
+#   TDC_KEYSTORE_PASSWORD  its password
+#   TDC_KEY_ALIAS          tdc-upload
+#   TDC_KEY_PASSWORD       same password as TDC_KEYSTORE_PASSWORD
+name: Build Android app
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version shown in the Play Store (e.g. 1.0.0)"
+        required: true
+        default: "1.0.0"
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Load the upload key
+        env:
+          TDC_KEYSTORE_B64: ${{ secrets.TDC_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$TDC_KEYSTORE_B64" ]; then echo "::error::The TDC_KEYSTORE_B64 secret is missing. See GUIDE.md step 3."; exit 1; fi
+          printf '%s' "$TDC_KEYSTORE_B64" | tr -d '\r\n ' | base64 -d > "$RUNNER_TEMP/tdc-upload.jks"
+          echo "TDC_KEYSTORE_PATH=$RUNNER_TEMP/tdc-upload.jks" >> "$GITHUB_ENV"
+
+      - name: Build (Play Store bundle + test APK)
+        env:
+          TDC_KEYSTORE_PASSWORD: ${{ secrets.TDC_KEYSTORE_PASSWORD }}
+          TDC_KEY_ALIAS: ${{ secrets.TDC_KEY_ALIAS }}
+          TDC_KEY_PASSWORD: ${{ secrets.TDC_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon :app:bundleRelease :app:assembleRelease \
+            -PversionName="${{ github.event.inputs.version }}" -PversionCode="${{ github.run_number }}"
+          mkdir -p out
+          cp app/build/outputs/bundle/release/app-release.aab "out/TDC-${{ github.event.inputs.version }}.aab"
+          cp app/build/outputs/apk/release/app-release.apk "out/TDC-${{ github.event.inputs.version }}.apk"
+
+      - name: Play Store bundle (.aab)
+        uses: actions/upload-artifact@v4
+        with:
+          name: TDC-Play-Store-${{ github.event.inputs.version }}
+          path: out/*.aab
+
+      - name: Phone test install (.apk)
+        uses: actions/upload-artifact@v4
+        with:
+          name: TDC-Phone-Test-${{ github.event.inputs.version }}
+          path: out/*.apk
+
+      - name: Done
+        run: echo "✅ Built version ${{ github.event.inputs.version }} (version code ${{ github.run_number }}). Download the files from the Artifacts section of this run."
+
+      - name: Clean up the key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/tdc-upload.jks"
